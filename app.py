@@ -1,14 +1,16 @@
 # daily_work_report_app/app.py
 
-from flask import Flask, render_template, request, redirect, url_for, jsonify
+from flask import Flask, render_template, request, redirect, url_for, send_file
 from flask_sqlalchemy import SQLAlchemy
-from datetime import date, datetime
+from sqlalchemy import and_
+from datetime import date
 from dotenv import load_dotenv
+import pandas as pd
 import os
+import io
 
 # Load environment variables from .env file
 load_dotenv()
-
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -26,22 +28,18 @@ class DailyReport(db.Model):
 
 @app.route('/')
 def index():
-    date_filter = request.args.get('date')
-    category_filter = request.args.get('category')
-
-    query = DailyReport.query
-    if date_filter:
-        query = query.filter_by(date=date_filter)
-    if category_filter:
-        query = query.filter_by(category=category_filter)
-
-    reports = query.order_by(DailyReport.date.desc()).all()
+    reports = DailyReport.query.order_by(DailyReport.date.desc()).all()
     return render_template('index.html', reports=reports)
+
+EXCEL_FILE = 'Daily_Work_Report.xlsx'
 
 @app.route('/add', methods=['GET', 'POST'])
 def add():
+    categories = ['Compliance', 'Broker Management', 'Database', 'AWS DevOps', 'Git', 'Postman', 'Other']
+    statuses = ['Pending', 'In Progress', 'Completed', 'Blocked']
+
     if request.method == 'POST':
-        date_input = request.form['date'] or str(date.today())
+        date_input = request.form['date']
         category = request.form['category']
         issue = request.form['issue']
         root_cause = request.form['root_cause']
@@ -58,33 +56,114 @@ def add():
         )
         db.session.add(report)
         db.session.commit()
+
+        # Append to Excel file
+        new_row = {
+            'Date': date_input,
+            'Category': category,
+            'Issue': issue,
+            'Root Cause': root_cause,
+            'Action Taken': action_taken,
+            'Status': status
+        }
+
+        try:
+            if os.path.exists(EXCEL_FILE):
+                df_existing = pd.read_excel(EXCEL_FILE)
+                df_updated = pd.concat([df_existing, pd.DataFrame([new_row])], ignore_index=True)
+            else:
+                df_updated = pd.DataFrame([new_row])
+
+            df_updated.to_excel(EXCEL_FILE, index=False)
+        except PermissionError:
+            print("⚠️ Please close the Excel file before submitting a new report.")
+
         return redirect(url_for('index'))
 
-    return render_template('add.html')
+    return render_template('add.html', categories=categories, statuses=statuses)
 
-@app.route('/delete/<int:id>')
-def delete(id):
-    report = DailyReport.query.get_or_404(id)
+
+@app.route('/generate')
+def generate_report():
+    reports = DailyReport.query.order_by(DailyReport.date.desc()).all()
+
+    data = [{
+        "Date": r.date,
+        "Category": r.category,
+        "Issue": r.issue,
+        "Root Cause": r.root_cause,
+        "Action Taken": r.action_taken,
+        "Status": r.status
+    } for r in reports]
+
+    df = pd.DataFrame(data)
+    file_path = EXCEL_FILE
+    df.to_excel(file_path, index=False)
+
+    return send_file(file_path, as_attachment=True)
+
+@app.route('/view', methods=['GET'])
+def view_reports():
+    # Use predefined categories and statuses (for consistent dropdowns)
+    categories = ['Compliance', 'Broker Management', 'Database', 'AWS DevOps', 'Git', 'Postman', 'Other']
+    statuses = ['Pending', 'In Progress', 'Completed', 'Blocked']
+
+    query = DailyReport.query
+
+    selected_category = request.args.get('category')
+    selected_status = request.args.get('status')
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+
+    if selected_category:
+        query = query.filter(DailyReport.category == selected_category)
+    if selected_status:
+        query = query.filter(DailyReport.status == selected_status)
+    if start_date and end_date:
+        query = query.filter(
+            and_(DailyReport.date >= start_date, DailyReport.date <= end_date)
+        )
+
+    filtered_reports = query.order_by(DailyReport.date.desc()).all()
+
+    return render_template(
+        'view.html',
+        reports=filtered_reports,
+        categories=categories,
+        statuses=statuses,
+        selected_category=selected_category,
+        selected_status=selected_status,
+        start_date=start_date,
+        end_date=end_date
+    )
+
+@app.route('/download')
+def download_report():
+    reports = DailyReport.query.order_by(DailyReport.date.desc()).all()
+    data = [{
+        "Date": r.date,
+        "Category": r.category,
+        "Issue": r.issue,
+        "Root Cause": r.root_cause,
+        "Action Taken": r.action_taken,
+        "Status": r.status
+    } for r in reports]
+
+    df = pd.DataFrame(data)
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name="Daily Report")
+    output.seek(0)
+
+    return send_file(output, download_name="Daily_Work_Report.xlsx", as_attachment=True)
+
+@app.route('/delete/<int:report_id>', methods=['POST'])
+def delete_report(report_id):
+    report = DailyReport.query.get_or_404(report_id)
     db.session.delete(report)
     db.session.commit()
     return redirect(url_for('index'))
-
-@app.route('/summary')
-def summary():
-    all_reports = DailyReport.query.all()
-    summary_data = {}
-    for report in all_reports:
-        date_key = report.date
-        if date_key not in summary_data:
-            summary_data[date_key] = []
-        summary_data[date_key].append({
-            "category": report.category,
-            "issue": report.issue,
-            "root_cause": report.root_cause,
-            "action_taken": report.action_taken,
-            "status": report.status
-        })
-    return jsonify(summary_data)
 
 if __name__ == '__main__':
     app.run(debug=True)
