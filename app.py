@@ -3,9 +3,14 @@
 from flask import Flask, render_template, request, redirect, url_for
 from flask_sqlalchemy import SQLAlchemy
 from datetime import date
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///daily_reports.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
@@ -34,7 +39,14 @@ def add():
         action_taken = request.form['action_taken']
         status = request.form['status']
 
-        report = DailyReport(date=date_input, category=category, issue=issue, root_cause=root_cause, action_taken=action_taken, status=status)
+        report = DailyReport(
+            date=date_input,
+            category=category,
+            issue=issue,
+            root_cause=root_cause,
+            action_taken=action_taken,
+            status=status
+        )
         db.session.add(report)
         db.session.commit()
         return redirect(url_for('index'))
